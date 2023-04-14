@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -24,19 +26,43 @@ func main() {
 		log.Fatal("Provided url is not in a correct format")
 	}
 
-	_, err := getAllPosts(url)
+	urlParts := strings.Split(url, "?")
+	url = urlParts[0]
+
+	posts, err := getAllPosts(url)
 	if err != nil {
 		log.Fatalf("Failed to fetch all posts: %s", err)
 	}
 }
 
 func getAllPosts(url string) ([]string, error) {
-	posts, err := numberOfPages(url)
+	pages, err := numberOfPages(url)
 	if err != nil {
 		return nil, err
 	}
 
-	return nil, nil
+	var posts []string
+	for i := 0; i < pages; i++ {
+		page := fmt.Sprintf("%s?o=%d", url, i*50)
+		log.Println(page)
+		res, err := http.Get(page)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+
+		doc, err := goquery.NewDocumentFromReader(res.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		doc.Find("article.post-card").Each(func(i int, selection *goquery.Selection) {
+			postUrl, _ := selection.Find("a").Attr("href")
+			posts = append(posts, postUrl)
+		})
+	}
+
+	return posts, nil
 }
 
 func numberOfPages(url string) (int, error) {
