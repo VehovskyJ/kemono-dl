@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/hashicorp/go-getter"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -49,6 +52,80 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to fetch all posts: %s", err)
 	}
+
+	for _, post := range posts {
+		postUrl := fmt.Sprintf("https://kemono.party%s", post)
+		err := downloadPost(postUrl, dir, name)
+		if err != nil {
+			log.Printf("Failed to download post: %s", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func downloadPost(url string, directory string, name string) error {
+	log.Printf("Downloading post: %s", url)
+	res, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return err
+	}
+
+	var downloads []string
+	doc.Find("h2:contains('Downloads')").Next().Find("a.post__attachment-link").Each(func(i int, selection *goquery.Selection) {
+		download, exists := selection.Attr("href")
+		if exists {
+			downloads = append(downloads, download)
+		}
+	})
+
+	var files []string
+	doc.Find("h2:contains('Files')").Next().Find("a.fileThumb").Each(func(i int, selection *goquery.Selection) {
+		file, exists := selection.Attr("href")
+		if exists {
+			files = append(files, file)
+		}
+	})
+
+	regex := regexp.MustCompile(`.*\/\d+\/post\/(\d+)`)
+	match := regex.FindStringSubmatch(url)
+
+	for _, download := range downloads {
+		err := downloadFile(download, directory, name, match[1])
+		if err != nil {
+			log.Printf("Faield to download file: %s", err)
+		}
+	}
+
+	for _, file := range files {
+		err := downloadFile(file, directory, name, match[1])
+		if err != nil {
+			log.Printf("Failed to download file: %s", err)
+		}
+	}
+
+	return nil
+}
+
+func downloadFile(url string, directory string, name string, postID string) error {
+	file := fmt.Sprintf("%s/%s_%s_%s", directory, name, postID, path.Base(url))
+
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		client := &getter.Client{
+			Src:  url,
+			Dst:  file,
+			Mode: getter.ClientModeFile,
+		}
+
+		return client.Get()
+	}
+
+	return nil
 }
 
 func getAllPosts(url string) ([]string, error) {
