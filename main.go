@@ -29,6 +29,22 @@ func main() {
 	urlParts := strings.Split(url, "?")
 	url = urlParts[0]
 
+	name, err := getName(url)
+	if err != nil {
+		log.Fatalf("Failed to fetch user: %s", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Failed to get current working directory: %s", err)
+	}
+
+	dir := fmt.Sprintf("%s/kemono/%s", wd, name)
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		log.Fatalf("Failed to create downlaod directory: %s", err)
+	}
+
 	posts, err := getAllPosts(url)
 	if err != nil {
 		log.Fatalf("Failed to fetch all posts: %s", err)
@@ -94,4 +110,20 @@ func numberOfPages(url string) (int, error) {
 	pageCount := (posts + 49) / 50
 
 	return pageCount, nil
+}
+
+func getName(url string) (string, error) {
+	res, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return "", err
+	}
+
+	name := doc.Find("span[itemprop='name']").Text()
+	return name, nil
 }
