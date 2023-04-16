@@ -22,7 +22,7 @@ func main() {
 
 	url := os.Args[1]
 
-	pattern := `https://kemono\.party/patreon/user/\d+`
+	pattern := `https://kemono\.party/[^/]+/user/\d+`
 	regex := regexp.MustCompile(pattern)
 
 	if !regex.MatchString(url) {
