@@ -24,15 +24,21 @@ func main() {
 	url := os.Args[1]
 
 	// Validates the format of the provided URL to ensure it matches tyhe pattern for kemono.party URLs.
-	pattern := `https://kemono\.party/[^/]+/user/\d+`
+	pattern := `https://(kemono\.party/[^/]+/user/\d+|coomer\.party/[^/]+/user/\w+)`
 	regex := regexp.MustCompile(pattern)
 
 	if !regex.MatchString(url) {
 		log.Fatal("Provided url is not in a correct format")
 	}
 
+	// Cleans the URL from any query parameters
 	urlParts := strings.Split(url, "?")
 	url = urlParts[0]
+
+	// Extracts the service name from the url
+	service := strings.TrimPrefix(url, "https://")
+	service = strings.Split(service, "/")[0]
+	service = strings.TrimSuffix(service, ".party")
 
 	// Gets the creator's name
 	name, err := getName(url)
@@ -47,7 +53,7 @@ func main() {
 	}
 
 	// Creates a directory for the downloaded media
-	dir := fmt.Sprintf("%s/kemono/%s", wd, name)
+	dir := fmt.Sprintf("%s/%s/%s", wd, service, name)
 	err = os.MkdirAll(dir, 0755)
 	if err != nil {
 		log.Fatalf("Failed to create downlaod directory: %s", err)
@@ -61,8 +67,8 @@ func main() {
 
 	// Downloads every post's content
 	for _, post := range posts {
-		postUrl := fmt.Sprintf("https://kemono.party%s", post)
-		err := downloadPost(postUrl, dir, name)
+		postUrl := fmt.Sprintf("https://%s.party%s", service, post)
+		err := downloadPost(postUrl, dir, name, service)
 		if err != nil {
 			log.Printf("Failed to download post: %s", err)
 		}
@@ -72,7 +78,7 @@ func main() {
 }
 
 // Downloads media content from a post
-func downloadPost(url string, directory string, name string) error {
+func downloadPost(url string, directory string, name string, service string) error {
 	log.Printf("Downloading post: %s", url)
 	res, err := http.Get(url)
 	if err != nil {
@@ -103,11 +109,16 @@ func downloadPost(url string, directory string, name string) error {
 	})
 
 	// Matches the creator's id from the url using regex
-	regex := regexp.MustCompile(`.*\/\d+\/post\/(\d+)`)
+	regex := regexp.MustCompile(`.*\/\w+\/post\/(\d+)`)
 	match := regex.FindStringSubmatch(url)
 
 	// Download all media from the post
 	for _, file := range files {
+		if service == "coomer" {
+			file = strings.Split(file, "?")[0]
+			file = fmt.Sprintf("https://coomer.party%s", file)
+		}
+
 		err := downloadFile(file, directory, name, match[1])
 		if err != nil {
 			log.Printf("Failed to download file: %s", err)
