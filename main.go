@@ -68,7 +68,7 @@ func main() {
 	// Downloads every post's content
 	for _, post := range posts {
 		postUrl := fmt.Sprintf("https://%s.party%s", service, post)
-		err := downloadPost(postUrl, dir, name)
+		err := downloadPost(postUrl, dir, name, service)
 		if err != nil {
 			log.Printf("Failed to download post: %s", err)
 		}
@@ -78,7 +78,7 @@ func main() {
 }
 
 // Downloads media content from a post
-func downloadPost(url string, directory string, name string) error {
+func downloadPost(url string, directory string, name string, service string) error {
 	log.Printf("Downloading post: %s", url)
 	res, err := http.Get(url)
 	if err != nil {
@@ -114,6 +114,11 @@ func downloadPost(url string, directory string, name string) error {
 
 	// Download all media from the post
 	for _, file := range files {
+		if service == "coomer" {
+			file = strings.Split(file, "?")[0]
+			file = fmt.Sprintf("https://coomer.party%s", file)
+		}
+
 		err := downloadFile(file, directory, name, match[1])
 		if err != nil {
 			log.Printf("Failed to download file: %s", err)
