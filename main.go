@@ -31,8 +31,14 @@ func main() {
 		log.Fatal("Provided url is not in a correct format")
 	}
 
+	// Cleans the URL from any query parameters
 	urlParts := strings.Split(url, "?")
 	url = urlParts[0]
+
+	// Extracts the service name from the url
+	service := strings.TrimPrefix(url, "https://")
+	service = strings.Split(service, "/")[0]
+	service = strings.TrimSuffix(service, ".party")
 
 	// Gets the creator's name
 	name, err := getName(url)
@@ -47,7 +53,7 @@ func main() {
 	}
 
 	// Creates a directory for the downloaded media
-	dir := fmt.Sprintf("%s/kemono/%s", wd, name)
+	dir := fmt.Sprintf("%s/%s/%s", wd, service, name)
 	err = os.MkdirAll(dir, 0755)
 	if err != nil {
 		log.Fatalf("Failed to create downlaod directory: %s", err)
@@ -61,7 +67,7 @@ func main() {
 
 	// Downloads every post's content
 	for _, post := range posts {
-		postUrl := fmt.Sprintf("https://kemono.party%s", post)
+		postUrl := fmt.Sprintf("https://%s.party%s", service, post)
 		err := downloadPost(postUrl, dir, name)
 		if err != nil {
 			log.Printf("Failed to download post: %s", err)
