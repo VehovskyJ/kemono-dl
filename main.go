@@ -24,7 +24,7 @@ func main() {
 	url := os.Args[1]
 
 	// Validates the format of the provided URL to ensure it matches tyhe pattern for kemono.party URLs.
-	pattern := `https://kemono\.party/[^/]+/user/\d+`
+	pattern := `https://(kemono\.party/[^/]+/user/\d+|coomer\.party/[^/]+/user/\w+)`
 	regex := regexp.MustCompile(pattern)
 
 	if !regex.MatchString(url) {
@@ -103,7 +103,7 @@ func downloadPost(url string, directory string, name string) error {
 	})
 
 	// Matches the creator's id from the url using regex
-	regex := regexp.MustCompile(`.*\/\d+\/post\/(\d+)`)
+	regex := regexp.MustCompile(`.*\/\w+\/post\/(\d+)`)
 	match := regex.FindStringSubmatch(url)
 
 	// Download all media from the post
