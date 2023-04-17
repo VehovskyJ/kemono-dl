@@ -16,12 +16,14 @@ import (
 )
 
 func main() {
+	// Checks if URL was provided as an argument
 	if len(os.Args) < 2 {
 		log.Fatal("Please provide a url")
 	}
 
 	url := os.Args[1]
 
+	// Validates the format of the provided URL to ensure it matches tyhe pattern for kemono.party URLs.
 	pattern := `https://kemono\.party/[^/]+/user/\d+`
 	regex := regexp.MustCompile(pattern)
 
@@ -32,37 +34,44 @@ func main() {
 	urlParts := strings.Split(url, "?")
 	url = urlParts[0]
 
+	// Gets the creator's name
 	name, err := getName(url)
 	if err != nil {
 		log.Fatalf("Failed to fetch user: %s", err)
 	}
 
+	// Gets the current working directory
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current working directory: %s", err)
 	}
 
+	// Creates a directory for the downloaded media
 	dir := fmt.Sprintf("%s/kemono/%s", wd, name)
 	err = os.MkdirAll(dir, 0755)
 	if err != nil {
 		log.Fatalf("Failed to create downlaod directory: %s", err)
 	}
 
+	// Retrieves teh list of all posts from the creator's page
 	posts, err := getAllPosts(url)
 	if err != nil {
 		log.Fatalf("Failed to fetch all posts: %s", err)
 	}
 
+	// Downloads every post's content
 	for _, post := range posts {
 		postUrl := fmt.Sprintf("https://kemono.party%s", post)
 		err := downloadPost(postUrl, dir, name)
 		if err != nil {
 			log.Printf("Failed to download post: %s", err)
 		}
+		// Adds a delay between each request to prevent HTTP 429: Too many requests
 		time.Sleep(300 * time.Millisecond)
 	}
 }
 
+// Downloads media content from a post
 func downloadPost(url string, directory string, name string) error {
 	log.Printf("Downloading post: %s", url)
 	res, err := http.Get(url)
@@ -76,6 +85,7 @@ func downloadPost(url string, directory string, name string) error {
 		return err
 	}
 
+	// Extracts the media URLs from the Downloads section of the post
 	var downloads []string
 	doc.Find("h2:contains('Downloads')").Next().Find("a.post__attachment-link").Each(func(i int, selection *goquery.Selection) {
 		download, exists := selection.Attr("href")
@@ -84,6 +94,7 @@ func downloadPost(url string, directory string, name string) error {
 		}
 	})
 
+	// Extracts the media URLs from the Files section of the post
 	var files []string
 	doc.Find("h2:contains('Files')").Next().Find("a.fileThumb").Each(func(i int, selection *goquery.Selection) {
 		file, exists := selection.Attr("href")
@@ -92,9 +103,11 @@ func downloadPost(url string, directory string, name string) error {
 		}
 	})
 
+	// Matches the creator's id from the url using regex
 	regex := regexp.MustCompile(`.*\/\d+\/post\/(\d+)`)
 	match := regex.FindStringSubmatch(url)
 
+	// Downloads all media from the Downloads section
 	for _, download := range downloads {
 		err := downloadFile(download, directory, name, match[1])
 		if err != nil {
@@ -102,6 +115,7 @@ func downloadPost(url string, directory string, name string) error {
 		}
 	}
 
+	// Download all media from the Files section
 	for _, file := range files {
 		err := downloadFile(file, directory, name, match[1])
 		if err != nil {
@@ -112,7 +126,9 @@ func downloadPost(url string, directory string, name string) error {
 	return nil
 }
 
+// Downloads a file from a URL
 func downloadFile(url string, directory string, name string, postID string) error {
+	// Constructs the file path for the resulting file
 	file := fmt.Sprintf("%s/%s_%s_%s", directory, name, postID, path.Base(url))
 
 	if _, err := os.Stat(file); os.IsNotExist(err) {
@@ -128,12 +144,14 @@ func downloadFile(url string, directory string, name string, postID string) erro
 	return nil
 }
 
+// Returns array of links to all posts from teh creator
 func getAllPosts(url string) ([]string, error) {
 	pages, err := numberOfPages(url)
 	if err != nil {
 		return nil, err
 	}
 
+	// Iterates through every page and extracts all posts
 	var posts []string
 	for i := 0; i < pages; i++ {
 		page := fmt.Sprintf("%s?o=%d", url, i*50)
@@ -149,6 +167,7 @@ func getAllPosts(url string) ([]string, error) {
 			return nil, err
 		}
 
+		// Searches for the post links in the HTML
 		doc.Find("article.post-card").Each(func(i int, selection *goquery.Selection) {
 			postUrl, _ := selection.Find("a").Attr("href")
 			posts = append(posts, postUrl)
@@ -158,6 +177,7 @@ func getAllPosts(url string) ([]string, error) {
 	return posts, nil
 }
 
+// Returns the total number of pages for a creator
 func numberOfPages(url string) (int, error) {
 	res, err := http.Get(url)
 	if err != nil {
@@ -170,8 +190,10 @@ func numberOfPages(url string) (int, error) {
 		return 0, err
 	}
 
+	// Searches for the HTML part containing the total number of posts
 	postText := doc.Find("div.paginator small").Text()
 
+	// Matches the number of posts from the element
 	pattern := `Showing \d+ - \d+ of (\d+)`
 	regex := regexp.MustCompile(pattern)
 	matches := regex.FindStringSubmatch(postText)
@@ -184,11 +206,14 @@ func numberOfPages(url string) (int, error) {
 		return 0, errors.New("could not extract the number of posts")
 	}
 
+	// Adds 49 to the total number of posts to account for rounding up when calculating the number of pages.
+	// Then divides teh adjusted total by 50 to calculate the total number of pages
 	pageCount := (posts + 49) / 50
 
 	return pageCount, nil
 }
 
+// Returns name of the creator
 func getName(url string) (string, error) {
 	res, err := http.Get(url)
 	if err != nil {
