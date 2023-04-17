@@ -85,17 +85,16 @@ func downloadPost(url string, directory string, name string) error {
 		return err
 	}
 
+	var files []string
 	// Extracts the media URLs from the Downloads section of the post
-	var downloads []string
 	doc.Find("h2:contains('Downloads')").Next().Find("a.post__attachment-link").Each(func(i int, selection *goquery.Selection) {
-		download, exists := selection.Attr("href")
+		file, exists := selection.Attr("href")
 		if exists {
-			downloads = append(downloads, download)
+			files = append(files, file)
 		}
 	})
 
 	// Extracts the media URLs from the Files section of the post
-	var files []string
 	doc.Find("h2:contains('Files')").Next().Find("a.fileThumb").Each(func(i int, selection *goquery.Selection) {
 		file, exists := selection.Attr("href")
 		if exists {
@@ -107,15 +106,7 @@ func downloadPost(url string, directory string, name string) error {
 	regex := regexp.MustCompile(`.*\/\d+\/post\/(\d+)`)
 	match := regex.FindStringSubmatch(url)
 
-	// Downloads all media from the Downloads section
-	for _, download := range downloads {
-		err := downloadFile(download, directory, name, match[1])
-		if err != nil {
-			log.Printf("Faield to download file: %s", err)
-		}
-	}
-
-	// Download all media from the Files section
+	// Download all media from the post
 	for _, file := range files {
 		err := downloadFile(file, directory, name, match[1])
 		if err != nil {
