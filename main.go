@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/hashicorp/go-getter"
+	"github.com/cavaliergopher/grab/v3"
 	"log"
 	"net/http"
 	"os"
@@ -134,13 +134,13 @@ func downloadFile(url string, directory string, name string, postID string) erro
 	file := fmt.Sprintf("%s/%s_%s_%s", directory, name, postID, path.Base(url))
 
 	if _, err := os.Stat(file); os.IsNotExist(err) {
-		client := &getter.Client{
-			Src:  url,
-			Dst:  file,
-			Mode: getter.ClientModeFile,
+		client := grab.NewClient()
+		req, err := grab.NewRequest(file, url)
+		if err != nil {
+			return err
 		}
 
-		return client.Get()
+		client.Do(req)
 	}
 
 	return nil
