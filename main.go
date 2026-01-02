@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,9 +59,18 @@ type ProfileResponse struct {
 	ChatCount  int         `json:"chat_count"`
 }
 
+// PageResult holds the result of fetching a page
+type PageResult struct {
+	PageNumber int
+	Posts      []Post
+	Success    bool
+	Error      error
+}
+
 func main() {
-	// Define the force flag
+	// Define flags
 	forceUpdate := flag.Bool("force", false, "Force update even if profile timestamp hasn't changed")
+	skipDownload := flag.Bool("skip-download", false, "Only fetch and save metadata, skip downloading files")
 
 	// Customize the help message
 	flag.Usage = func() {
@@ -90,13 +100,17 @@ func main() {
 	log.Printf("Service: %s", profile.Service)
 	log.Printf("User ID: %s", profile.UserID)
 
+	if *skipDownload {
+		log.Printf("⏭️  Skip download mode enabled - will only fetch metadata")
+	}
+
 	// Fetch profile to get post count
 	profileData, err := fetchProfile(profile)
 	if err != nil {
 		log.Fatalf("Failed to fetch profile: %s", err)
 	}
 
-	log.Printf("Total posts: %d", profileData.PostCount)
+	log.Printf("Total posts on profile: %d", profileData.PostCount)
 
 	// Get current working directory
 	wd, err := os.Getwd()
@@ -122,14 +136,14 @@ func main() {
 		log.Fatalf("Failed to save profile: %s", err)
 	}
 
-	// Fetch posts from API
-	posts, err := fetchPosts(profile)
+	// Fetch posts from API with pagination
+	posts, err := fetchPostsWithPagination(profile)
 	if err != nil {
 		log.Fatalf("Failed to fetch posts: %s", err)
 	}
 
 	// Fetch and save detailed post data
-	err = fetchAndSaveDetailedPosts(wd, profile, posts)
+	err = fetchAndSaveDetailedPosts(wd, profile, posts, *skipDownload)
 	if err != nil {
 		log.Fatalf("Failed to save posts: %s", err)
 	}
@@ -138,7 +152,7 @@ func main() {
 }
 
 // fetchAndSaveDetailedPosts fetches detailed post data and saves it to disk
-func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []Post) error {
+func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []Post, skipDownload bool) error {
 	totalPosts := len(posts)
 	log.Printf("Processing %d posts", totalPosts)
 
@@ -160,6 +174,12 @@ func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []P
 		}
 
 		log.Printf("Saved post metadata: %s", post.Id)
+
+		// Skip downloading files if flag is set
+		if skipDownload {
+			log.Printf("⏭️  Skipping file download for post %s (skip-download mode)", post.Id)
+			continue
+		}
 
 		// Download post file
 		err = downloadPostFile(baseDir, profile.Service, profile.UserID, post.Id, detailedPost, profile)
@@ -349,12 +369,78 @@ func fetchProfile(profile *ProfileConfig) (*ProfileResponse, error) {
 	return &profileResp, nil
 }
 
-// fetchPosts calls the API and returns the posts
-func fetchPosts(profile *ProfileConfig) ([]Post, error) {
-	// Construct the API URL
-	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/posts", profile.BaseURL, profile.Service, profile.UserID)
-	log.Printf("Fetching posts: %s", apiURL)
+// fetchPostsWithPagination fetches all posts with pagination support
+func fetchPostsWithPagination(profile *ProfileConfig) ([]Post, error) {
+	var allPosts []Post
+	pageSize := 50
+	offset := 0
+	pageNumber := 1
+	maxRetries := 3
+	retryDelay := 2 * time.Second
 
+	log.Printf("Starting to fetch posts (50 posts per page)")
+
+	for {
+		// Construct the API URL with pagination offset
+		apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/posts", profile.BaseURL, profile.Service, profile.UserID)
+		if offset > 0 {
+			apiURL = fmt.Sprintf("%s?o=%d", apiURL, offset)
+		}
+
+		log.Printf("Fetching page %d (offset=%d)", pageNumber, offset)
+
+		var posts []Post
+		var err error
+		pageSuccess := false
+
+		// Retry logic for failed pages
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			posts, err = fetchPostsPage(apiURL)
+			if err == nil {
+				pageSuccess = true
+				break
+			}
+
+			if attempt < maxRetries {
+				log.Printf("⚠️  Page %d failed (attempt %d/%d): %v. Retrying in %.0fs...",
+					pageNumber, attempt, maxRetries, err, retryDelay.Seconds())
+				time.Sleep(retryDelay)
+			}
+		}
+
+		if !pageSuccess {
+			log.Printf("❌ Page %d failed after %d attempts: %v", pageNumber, maxRetries, err)
+			return nil, fmt.Errorf("failed to fetch page %d after %d retries: %w", pageNumber, maxRetries, err)
+		}
+
+		// Check if we got any posts
+		if len(posts) == 0 {
+			log.Printf("✓ Page %d: No more posts available. Pagination complete.", pageNumber)
+			break
+		}
+
+		log.Printf("✓ Page %d successfully fetched (%d/50 posts)", pageNumber, len(posts))
+		allPosts = append(allPosts, posts...)
+
+		// If we got fewer posts than the page size, we've reached the end
+		if len(posts) < pageSize {
+			log.Printf("✓ Pagination complete. Last page had %d posts.", len(posts))
+			break
+		}
+
+		offset += pageSize
+		pageNumber++
+	}
+
+	log.Printf("====================================")
+	log.Printf("Total posts fetched: %d", len(allPosts))
+	log.Printf("====================================")
+
+	return allPosts, nil
+}
+
+// fetchPostsPage fetches a single page of posts from the API
+func fetchPostsPage(apiURL string) ([]Post, error) {
 	// Create a new HTTP request
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -365,8 +451,7 @@ func fetchPosts(profile *ProfileConfig) ([]Post, error) {
 	req.Header.Set("Accept", "text/css")
 
 	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call API: %w", err)
 	}
@@ -643,4 +728,25 @@ func extractProfileConfig(profileURL string) (*ProfileConfig, error) {
 		Service: service,
 		UserID:  userID,
 	}, nil
+}
+
+var httpClient = &http.Client{
+	Timeout: time.Minute * 2,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
+// fetchPosts calls the API and returns the posts (kept for API compatibility)
+// Note: Use fetchPostsWithPagination instead for fetching all posts
+func fetchPosts(profile *ProfileConfig) ([]Post, error) {
+	return fetchPostsWithPagination(profile)
 }
