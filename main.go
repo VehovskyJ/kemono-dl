@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -57,12 +58,26 @@ type ProfileResponse struct {
 }
 
 func main() {
-	// Checks if URL was provided as an argument
-	if len(os.Args) < 2 {
-		log.Fatal("Please provide a url")
+	// Define the force flag
+	forceUpdate := flag.Bool("force", false, "Force update even if profile timestamp hasn't changed")
+
+	// Customize the help message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: kemono-dl [options] <url>\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
 	}
 
-	inputURL := os.Args[1]
+	flag.Parse()
+
+	// Get the positional argument (URL)
+	args := flag.Args()
+	if len(args) < 1 {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	inputURL := args[0]
 
 	// Extract profile configuration from the provided URL
 	profile, err := extractProfileConfig(inputURL)
@@ -90,7 +105,7 @@ func main() {
 
 	// Check if profile folder exists and compare updated timestamps
 	profileDir := filepath.Join(wd, profile.Service, profileData.Id)
-	shouldUpdate, err := shouldUpdateProfile(profileDir, profileData)
+	shouldUpdate, err := shouldUpdateProfile(profileDir, profileData, *forceUpdate)
 	if err != nil {
 		log.Fatalf("Failed to check profile status: %s", err)
 	}
@@ -217,7 +232,13 @@ func savePost(baseDir string, service string, userID string, postID string, post
 }
 
 // shouldUpdateProfile checks if profile folder exists and compares the updated timestamp
-func shouldUpdateProfile(profileDir string, newProfile *ProfileResponse) (bool, error) {
+func shouldUpdateProfile(profileDir string, newProfile *ProfileResponse, forceUpdate bool) (bool, error) {
+	// If force update is enabled, always update
+	if forceUpdate {
+		log.Println("Force update enabled, skipping timestamp check")
+		return true, nil
+	}
+
 	// Check if profile directory exists
 	_, err := os.Stat(profileDir)
 	if err != nil {
