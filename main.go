@@ -156,6 +156,19 @@ func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []P
 		}
 
 		log.Printf("Saved post: %s", post.Id)
+
+		// Download post file
+		err = downloadPostFile(baseDir, profile.Service, profile.UserID, post.Id, detailedPost, profile)
+		if err != nil {
+			log.Printf("Warning: Failed to download file for post %s: %s", post.Id, err)
+		}
+
+		// Download attachments from the post
+		err = downloadPostAttachments(baseDir, profile.Service, profile.UserID, post.Id, detailedPost, profile)
+		if err != nil {
+			log.Printf("Warning: Failed to download attachments for post %s: %s", post.Id, err)
+			continue
+		}
 	}
 
 	return nil
@@ -398,6 +411,141 @@ func saveProfile(baseDir string, service string, profile *ProfileResponse) error
 	err = os.WriteFile(profileFilePath, profileData, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write profile JSON: %w", err)
+	}
+
+	return nil
+}
+
+// downloadPostFile downloads the main file from post.file field
+func downloadPostFile(baseDir string, service string, userID string, postID string, detailedPost *DetailedPostResponse, profile *ProfileConfig) error {
+	// Extract file from the post field
+	postFile, ok := detailedPost.Post["file"]
+	if !ok {
+		log.Printf("No file field in post %s", postID)
+		return nil
+	}
+
+	fileMap, ok := postFile.(map[string]interface{})
+	if !ok {
+		log.Printf("File field is not a valid object in post %s", postID)
+		return nil
+	}
+
+	// Check if file has name and path
+	name, nameOk := fileMap["name"].(string)
+	path, pathOk := fileMap["path"].(string)
+	if !nameOk || !pathOk {
+		log.Printf("File missing name or path in post %s", postID)
+		return nil
+	}
+
+	// If name is empty, skip downloading
+	if name == "" {
+		log.Printf("File name is empty for post %s", postID)
+		return nil
+	}
+
+	// Download to post directory directly
+	postDir := filepath.Join(baseDir, service, userID, postID)
+
+	err := downloadFileFromPath(postDir, name, path, profile.BaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to download file %s: %w", name, err)
+	}
+
+	log.Printf("Downloaded file: %s", name)
+	return nil
+}
+
+// downloadFileFromPath downloads a file using the base URL and file path
+func downloadFileFromPath(destDir string, fileName string, filePath string, baseURL string) error {
+	// Construct full download URL using base URL
+	downloadURL := baseURL + filePath
+
+	// Create request
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request for %s: %w", fileName, err)
+	}
+
+	// Set User-Agent header
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", fileName, err)
+	}
+	defer resp.Body.Close()
+
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed for %s with status %d", fileName, resp.StatusCode)
+	}
+
+	// Write to file
+	outputPath := filepath.Join(destDir, fileName)
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %w", fileName, err)
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file %s: %w", fileName, err)
+	}
+
+	return nil
+}
+
+// downloadPostAttachments downloads all attachments from the post.attachments field
+func downloadPostAttachments(baseDir string, service string, userID string, postID string, detailedPost *DetailedPostResponse, profile *ProfileConfig) error {
+	// Extract attachments from the post field
+	postData, ok := detailedPost.Post["attachments"]
+	if !ok {
+		log.Printf("No attachments field in post %s", postID)
+		return nil
+	}
+
+	attachmentsList, ok := postData.([]interface{})
+	if !ok {
+		log.Printf("Attachments field is not a list in post %s", postID)
+		return nil
+	}
+
+	if len(attachmentsList) == 0 {
+		log.Printf("No attachments found in post %s", postID)
+		return nil
+	}
+
+	// Download to post directory directly
+	postDir := filepath.Join(baseDir, service, userID, postID)
+
+	// Download each attachment
+	for _, attachment := range attachmentsList {
+		attachmentMap, ok := attachment.(map[string]interface{})
+		if !ok {
+			log.Printf("Attachment is not a valid object in post %s", postID)
+			continue
+		}
+
+		name, nameOk := attachmentMap["name"].(string)
+		path, pathOk := attachmentMap["path"].(string)
+		if !nameOk || !pathOk {
+			log.Printf("Attachment missing name or path in post %s", postID)
+			continue
+		}
+
+		// Download the attachment to post directory
+		err := downloadFileFromPath(postDir, name, path, profile.BaseURL)
+		if err != nil {
+			log.Printf("Warning: Failed to download attachment %s for post %s: %s", name, postID, err)
+			continue
+		}
+
+		log.Printf("Downloaded attachment: %s", name)
 	}
 
 	return nil
