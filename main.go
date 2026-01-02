@@ -660,6 +660,13 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 
 // downloadFileFromPath downloads a file using the base URL and file path with progress tracking
 func downloadFileFromPath(destDir string, fileName string, filePath string, baseURL string) error {
+	// Check if file already exists
+	outputPath := filepath.Join(destDir, fileName)
+	if _, err := os.Stat(outputPath); err == nil {
+		log.Printf("File already exists, skipping: %s", fileName)
+		return nil
+	}
+
 	maxRetries := 5
 	initialBackoff := time.Second
 
