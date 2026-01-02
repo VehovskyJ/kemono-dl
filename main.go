@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,17 +54,35 @@ func main() {
 	log.Printf("Service: %s", profile.Service)
 	log.Printf("User ID: %s", profile.UserID)
 
-	// Call the API and print the response
-	err = fetchAndPrintPosts(profile)
+	// Fetch posts from API
+	posts, err := fetchPosts(profile)
 	if err != nil {
 		log.Fatalf("Failed to fetch posts: %s", err)
 	}
+
+	log.Printf("Retrieved %d posts", len(posts))
+
+	// Get current working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Failed to get current working directory: %s", err)
+	}
+
+	// Create folder structure and save post data
+	for _, post := range posts {
+		err := savePosts(wd, profile.Service, profile.UserID, &post)
+		if err != nil {
+			log.Printf("Failed to save post %s: %s", post.Id, err)
+		}
+	}
+
+	log.Println("All posts saved successfully")
 }
 
 // ... existing extractProfileConfig function ...
 
-// fetchAndPrintPosts calls the API and prints the JSON response to console
-func fetchAndPrintPosts(profile *ProfileConfig) error {
+// fetchPosts calls the API and returns the posts
+func fetchPosts(profile *ProfileConfig) ([]Post, error) {
 	// Construct the API URL
 	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/posts", profile.BaseURL, profile.Service, profile.UserID)
 	log.Printf("Calling API: %s", apiURL)
@@ -71,7 +90,7 @@ func fetchAndPrintPosts(profile *ProfileConfig) error {
 	// Create a new HTTP request
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set the required Accept header
@@ -81,40 +100,56 @@ func fetchAndPrintPosts(profile *ProfileConfig) error {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to call API: %w", err)
+		return nil, fmt.Errorf("failed to call API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Check HTTP status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Unmarshal the JSON response into a slice of Post objects
 	var posts []Post
 	err = json.Unmarshal(body, &posts)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal JSON: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	// Pretty print the posts
-	prettyBody, err := json.MarshalIndent(posts, "", "  ")
+	return posts, nil
+}
+
+// savePosts creates the folder structure and saves post data as JSON
+func savePosts(baseDir string, service string, userID string, post *Post) error {
+	// Create the directory structure: baseDir/service/userID/postID/
+	postDir := filepath.Join(baseDir, service, userID, post.Id)
+
+	err := os.MkdirAll(postDir, 0755)
 	if err != nil {
-		fmt.Println("Failed to pretty print JSON:")
-		fmt.Println(string(body))
-		return nil
+		return fmt.Errorf("failed to create post directory: %w", err)
 	}
 
-	fmt.Println("API Response:")
-	fmt.Println(string(prettyBody))
-	fmt.Printf("\nTotal posts retrieved: %d\n", len(posts))
+	// Marshal the post struct to JSON
+	postData, err := json.MarshalIndent(post, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal post data: %w", err)
+	}
+
+	// Write the JSON data to data.json file
+	dataFilePath := filepath.Join(postDir, "data.json")
+	err = os.WriteFile(dataFilePath, postData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write data.json: %w", err)
+	}
+
+	log.Printf("Saved post %s to %s", post.Id, postDir)
 
 	return nil
 }
