@@ -34,6 +34,14 @@ type Post struct {
 	} `json:"attachments"`
 }
 
+type DetailedPostResponse struct {
+	Post        map[string]interface{} `json:"post"`
+	Attachments []interface{}          `json:"attachments"`
+	Previews    []interface{}          `json:"previews"`
+	Videos      []interface{}          `json:"videos"`
+	Props       map[string]interface{} `json:"props"`
+}
+
 type ProfileResponse struct {
 	Id         string      `json:"id"`
 	Name       string      `json:"name"`
@@ -104,15 +112,108 @@ func main() {
 		log.Fatalf("Failed to fetch posts: %s", err)
 	}
 
-	// Create folder structure and save post data
-	for _, post := range posts {
-		err := savePosts(wd, profile.Service, profile.UserID, &post)
-		if err != nil {
-			log.Printf("Failed to save post %s: %s", post.Id, err)
-		}
+	// Fetch and save detailed post data
+	err = fetchAndSaveDetailedPosts(wd, profile, posts)
+	if err != nil {
+		log.Fatalf("Failed to save posts: %s", err)
 	}
 
 	log.Println("All posts saved successfully")
+}
+
+// fetchAndSaveDetailedPosts fetches detailed post data and saves it to disk
+func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []Post) error {
+	for _, post := range posts {
+		log.Printf("Fetching detailed data for post: %s", post.Id)
+
+		// Fetch detailed post data
+		detailedPost, err := fetchDetailedPost(profile, post.Id)
+		if err != nil {
+			log.Printf("Warning: Failed to fetch detailed post %s: %s", post.Id, err)
+			continue
+		}
+
+		// Save the detailed post data
+		err = savePost(baseDir, profile.Service, profile.UserID, post.Id, detailedPost)
+		if err != nil {
+			log.Printf("Warning: Failed to save post %s: %s", post.Id, err)
+			continue
+		}
+
+		log.Printf("Saved post: %s", post.Id)
+	}
+
+	return nil
+}
+
+// fetchDetailedPost fetches the detailed post data from the API
+func fetchDetailedPost(profile *ProfileConfig, postID string) (*DetailedPostResponse, error) {
+	// Construct the detailed post API URL
+	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/post/%s", profile.BaseURL, profile.Service, profile.UserID, postID)
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set the required Accept header
+	req.Header.Set("Accept", "text/css")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call post API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Unmarshal the JSON response into DetailedPostResponse
+	var postResp DetailedPostResponse
+	err = json.Unmarshal(body, &postResp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+
+	return &postResp, nil
+}
+
+// savePost saves the detailed post data to {service}/{user}/{post}/{post}.json
+func savePost(baseDir string, service string, userID string, postID string, postData *DetailedPostResponse) error {
+	// Create the directory structure: baseDir/service/userID/postID/
+	postDir := filepath.Join(baseDir, service, userID, postID)
+
+	err := os.MkdirAll(postDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create post directory: %w", err)
+	}
+
+	// Marshal the post struct to JSON with indentation
+	jsonData, err := json.MarshalIndent(postData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal post data: %w", err)
+	}
+
+	// Write the JSON data to {postID}.json file
+	postFilePath := filepath.Join(postDir, postID+".json")
+	err = os.WriteFile(postFilePath, jsonData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write post JSON: %w", err)
+	}
+
+	return nil
 }
 
 // shouldUpdateProfile checks if profile folder exists and compares the updated timestamp
@@ -253,34 +354,6 @@ func fetchPosts(profile *ProfileConfig) ([]Post, error) {
 	}
 
 	return posts, nil
-}
-
-// savePosts creates the folder structure and saves post data as JSON
-func savePosts(baseDir string, service string, userID string, post *Post) error {
-	// Create the directory structure: baseDir/service/userID/postID/
-	postDir := filepath.Join(baseDir, service, userID, post.Id)
-
-	err := os.MkdirAll(postDir, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to create post directory: %w", err)
-	}
-
-	// Marshal the post struct to JSON
-	postData, err := json.MarshalIndent(post, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal post data: %w", err)
-	}
-
-	// Write the JSON data to data.json file
-	dataFilePath := filepath.Join(postDir, "data.json")
-	err = os.WriteFile(dataFilePath, postData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write data.json: %w", err)
-	}
-
-	log.Printf("Saved post %s to %s", post.Id, postDir)
-
-	return nil
 }
 
 // saveProfile saves the profile details as a JSON file in the service/userID directory
