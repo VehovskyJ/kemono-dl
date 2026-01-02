@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,6 +58,31 @@ type ProfileResponse struct {
 	DmCount    int         `json:"dm_count"`
 	ShareCount int         `json:"share_count"`
 	ChatCount  int         `json:"chat_count"`
+}
+
+// RateLimiter manages request rate limiting and backoff
+type RateLimiter struct {
+	lastRequestTime time.Time
+	minInterval     time.Duration
+	mu              sync.Mutex
+}
+
+func NewRateLimiter(requestsPerSecond int) *RateLimiter {
+	return &RateLimiter{
+		minInterval: time.Second / time.Duration(requestsPerSecond),
+	}
+}
+
+// Wait ensures the minimum interval between requests
+func (rl *RateLimiter) Wait() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	elapsed := time.Since(rl.lastRequestTime)
+	if elapsed < rl.minInterval {
+		time.Sleep(rl.minInterval - elapsed)
+	}
+	rl.lastRequestTime = time.Now()
 }
 
 // PageResult holds the result of fetching a page
@@ -200,46 +226,73 @@ func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []P
 
 // fetchDetailedPost fetches the detailed post data from the API
 func fetchDetailedPost(profile *ProfileConfig, postID string) (*DetailedPostResponse, error) {
-	// Construct the detailed post API URL
-	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/post/%s", profile.BaseURL, profile.Service, profile.UserID, postID)
+	maxRetries := 5
+	initialBackoff := time.Second
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Apply rate limiting before making the request
+		rateLimiter.Wait()
+
+		// Construct the detailed post API URL
+		apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/post/%s", profile.BaseURL, profile.Service, profile.UserID, postID)
+
+		// Create a new HTTP request
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Set the required Accept header
+		req.Header.Set("Accept", "text/css")
+
+		// Make the HTTP request
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to call post API: %w", err)
+		}
+
+		// Check for rate limit error (429 Too Many Requests)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+
+			if attempt < maxRetries {
+				// Calculate exponential backoff: baseDelay * 2^(attempt-1)
+				backoffDuration := time.Duration(1<<uint(attempt-1)) * initialBackoff
+				log.Printf("⚠️  Rate limited (429) while fetching post %s. Attempt %d/%d. Waiting %.0fs before retry...",
+					postID, attempt, maxRetries, backoffDuration.Seconds())
+				time.Sleep(backoffDuration)
+				continue
+			}
+
+			return nil, fmt.Errorf("rate limited while fetching post %s after %d attempts", postID, maxRetries)
+		}
+
+		// Check HTTP status code
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Read the response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Unmarshal the JSON response into DetailedPostResponse
+		var postResp DetailedPostResponse
+		err = json.Unmarshal(body, &postResp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+		}
+
+		return &postResp, nil
 	}
 
-	// Set the required Accept header
-	req.Header.Set("Accept", "text/css")
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call post API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check HTTP status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read the response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Unmarshal the JSON response into DetailedPostResponse
-	var postResp DetailedPostResponse
-	err = json.Unmarshal(body, &postResp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
-	}
-
-	return &postResp, nil
+	return nil, fmt.Errorf("failed to fetch post %s after %d attempts", postID, maxRetries)
 }
 
 // savePost saves the detailed post data to {service}/{user}/{post}/{post}.json
@@ -441,42 +494,69 @@ func fetchPostsWithPagination(profile *ProfileConfig) ([]Post, error) {
 
 // fetchPostsPage fetches a single page of posts from the API
 func fetchPostsPage(apiURL string) ([]Post, error) {
-	// Create a new HTTP request
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	maxRetries := 5
+	initialBackoff := time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Apply rate limiting before making the request
+		rateLimiter.Wait()
+
+		// Create a new HTTP request
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Set the required Accept header
+		req.Header.Set("Accept", "text/css")
+
+		// Make the HTTP request
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to call API: %w", err)
+		}
+
+		// Check for rate limit error (429 Too Many Requests)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+
+			if attempt < maxRetries {
+				// Calculate exponential backoff: baseDelay * 2^(attempt-1)
+				backoffDuration := time.Duration(1<<uint(attempt-1)) * initialBackoff
+				log.Printf("⚠️  Rate limited (429). Attempt %d/%d. Waiting %.0fs before retry...",
+					attempt, maxRetries, backoffDuration.Seconds())
+				time.Sleep(backoffDuration)
+				continue
+			}
+
+			return nil, fmt.Errorf("rate limited after %d attempts", maxRetries)
+		}
+
+		// Check other HTTP status codes
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Read the response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Unmarshal the JSON response into a slice of Post objects
+		var posts []Post
+		err = json.Unmarshal(body, &posts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+		}
+
+		return posts, nil
 	}
 
-	// Set the required Accept header
-	req.Header.Set("Accept", "text/css")
-
-	// Make the HTTP request
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check HTTP status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read the response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Unmarshal the JSON response into a slice of Post objects
-	var posts []Post
-	err = json.Unmarshal(body, &posts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
-	}
-
-	return posts, nil
+	return nil, fmt.Errorf("failed to fetch posts after %d attempts", maxRetries)
 }
 
 // saveProfile saves the profile details as a JSON file in the service/userID directory
@@ -580,69 +660,97 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 
 // downloadFileFromPath downloads a file using the base URL and file path with progress tracking
 func downloadFileFromPath(destDir string, fileName string, filePath string, baseURL string) error {
-	// Construct full download URL using base URL
-	downloadURL := baseURL + filePath
+	maxRetries := 5
+	initialBackoff := time.Second
 
-	// Create request
-	req, err := http.NewRequest("GET", downloadURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request for %s: %w", fileName, err)
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Apply rate limiting before making the request
+		rateLimiter.Wait()
+
+		// Construct full download URL using base URL
+		downloadURL := baseURL + filePath
+
+		// Create request
+		req, err := http.NewRequest("GET", downloadURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create request for %s: %w", fileName, err)
+		}
+
+		// Set User-Agent header
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+		// Create HTTP client with timeout
+		client := &http.Client{
+			Timeout: 2 * time.Minute,
+		}
+
+		log.Printf("Starting download: %s", fileName)
+		startTime := time.Now()
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to download %s: %w", fileName, err)
+		}
+
+		// Check for rate limit error (429 Too Many Requests)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+
+			if attempt < maxRetries {
+				backoffDuration := time.Duration(1<<uint(attempt-1)) * initialBackoff
+				log.Printf("⚠️  Rate limited (429) while downloading %s. Attempt %d/%d. Waiting %.0fs before retry...",
+					fileName, attempt, maxRetries, backoffDuration.Seconds())
+				time.Sleep(backoffDuration)
+				continue
+			}
+
+			return fmt.Errorf("rate limited while downloading %s after %d attempts", fileName, maxRetries)
+		}
+
+		// Check HTTP status code
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return fmt.Errorf("download failed for %s with status %d", fileName, resp.StatusCode)
+		}
+
+		// Create output file
+		outputPath := filepath.Join(destDir, fileName)
+		file, err := os.Create(outputPath)
+		if err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("failed to create file %s: %w", fileName, err)
+		}
+
+		// Get total file size from Content-Length header
+		totalSize := resp.ContentLength
+
+		// Create progress writer
+		progressWriter := &ProgressWriter{
+			fileName:    fileName,
+			totalSize:   totalSize,
+			lastLogTime: startTime,
+		}
+
+		// Copy with progress tracking
+		_, err = io.Copy(file, io.TeeReader(resp.Body, progressWriter))
+		file.Close()
+		resp.Body.Close()
+
+		if err != nil {
+			os.Remove(outputPath) // Clean up incomplete file
+			return fmt.Errorf("failed to write file %s: %w", fileName, err)
+		}
+
+		// Log completion with speed
+		duration := time.Since(startTime)
+		speedMBs := float64(progressWriter.downloadedSize) / 1024 / 1024 / duration.Seconds()
+		log.Printf("Completed download: %s (%.2f MB in %.1fs at %.2f MB/s)",
+			fileName, float64(progressWriter.downloadedSize)/1024/1024, duration.Seconds(), speedMBs)
+
+		return nil
 	}
 
-	// Set User-Agent header
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 2 * time.Minute,
-	}
-
-	log.Printf("Starting download: %s", fileName)
-	startTime := time.Now()
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to download %s: %w", fileName, err)
-	}
-	defer resp.Body.Close()
-
-	// Check HTTP status code
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed for %s with status %d", fileName, resp.StatusCode)
-	}
-
-	// Create output file
-	outputPath := filepath.Join(destDir, fileName)
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create file %s: %w", fileName, err)
-	}
-	defer file.Close()
-
-	// Get total file size from Content-Length header
-	totalSize := resp.ContentLength
-
-	// Create progress writer
-	progressWriter := &ProgressWriter{
-		fileName:    fileName,
-		totalSize:   totalSize,
-		lastLogTime: startTime,
-	}
-
-	// Copy with progress tracking
-	_, err = io.Copy(file, io.TeeReader(resp.Body, progressWriter))
-	if err != nil {
-		os.Remove(outputPath) // Clean up incomplete file
-		return fmt.Errorf("failed to write file %s: %w", fileName, err)
-	}
-
-	// Log completion with speed
-	duration := time.Since(startTime)
-	speedMBs := float64(progressWriter.downloadedSize) / 1024 / 1024 / duration.Seconds()
-	log.Printf("Completed download: %s (%.2f MB in %.1fs at %.2f MB/s)",
-		fileName, float64(progressWriter.downloadedSize)/1024/1024, duration.Seconds(), speedMBs)
-
-	return nil
+	return fmt.Errorf("failed to download %s after %d attempts", fileName, maxRetries)
 }
 
 // downloadPostAttachments downloads all attachments from the post.attachments field
@@ -744,6 +852,9 @@ var httpClient = &http.Client{
 		ExpectContinueTimeout: 1 * time.Second,
 	},
 }
+
+// Global rate limiter: 1 request per second
+var rateLimiter = NewRateLimiter(1)
 
 // fetchPosts calls the API and returns the posts (kept for API compatibility)
 // Note: Use fetchPostsWithPagination instead for fetching all posts
