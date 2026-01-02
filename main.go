@@ -1,19 +1,39 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/PuerkitoBio/goquery"
-	"github.com/cavaliergopher/grab/v3"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"path"
-	"regexp"
-	"strconv"
 	"strings"
-	"time"
 )
+
+// ProfileConfig holds the extracted profile information
+type ProfileConfig struct {
+	BaseURL string // e.g., "https://kemono.cr" or "https://coomer.st"
+	Service string // e.g., "patreon", "onlyfans"
+	UserID  string // e.g., "12345" or "username"
+}
+
+// Post represents a single post from the API response
+type Post struct {
+	Id        string `json:"id"`
+	User      string `json:"user"`
+	Service   string `json:"service"`
+	Title     string `json:"title"`
+	Substring string `json:"substring"`
+	Published string `json:"published"`
+	File      struct {
+	} `json:"file"`
+	Attachments []struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	} `json:"attachments"`
+}
 
 func main() {
 	// Checks if URL was provided as an argument
@@ -21,213 +41,114 @@ func main() {
 		log.Fatal("Please provide a url")
 	}
 
-	url := os.Args[1]
+	inputURL := os.Args[1]
 
-	// Validates the format of the provided URL to ensure it matches tyhe pattern for kemono.party URLs.
-	pattern := `https://(kemono\.party/[^/]+/user/\d+|coomer\.party/[^/]+/user/\w+)`
-	regex := regexp.MustCompile(pattern)
-
-	if !regex.MatchString(url) {
-		log.Fatal("Provided url is not in a correct format")
-	}
-
-	// Cleans the URL from any query parameters
-	urlParts := strings.Split(url, "?")
-	url = urlParts[0]
-
-	// Extracts the service name from the url
-	service := strings.TrimPrefix(url, "https://")
-	service = strings.Split(service, "/")[0]
-	service = strings.TrimSuffix(service, ".party")
-
-	// Gets the creator's name
-	name, err := getName(url)
+	// Extract profile configuration from the provided URL
+	profile, err := extractProfileConfig(inputURL)
 	if err != nil {
-		log.Fatalf("Failed to fetch user: %s", err)
+		log.Fatalf("Failed to parse URL: %s", err)
 	}
 
-	// Gets the current working directory
-	wd, err := os.Getwd()
+	log.Printf("Base URL: %s", profile.BaseURL)
+	log.Printf("Service: %s", profile.Service)
+	log.Printf("User ID: %s", profile.UserID)
+
+	// Call the API and print the response
+	err = fetchAndPrintPosts(profile)
 	if err != nil {
-		log.Fatalf("Failed to get current working directory: %s", err)
-	}
-
-	// Creates a directory for the downloaded media
-	dir := fmt.Sprintf("%s/%s/%s", wd, service, name)
-	err = os.MkdirAll(dir, 0755)
-	if err != nil {
-		log.Fatalf("Failed to create downlaod directory: %s", err)
-	}
-
-	// Retrieves teh list of all posts from the creator's page
-	posts, err := getAllPosts(url)
-	if err != nil {
-		log.Fatalf("Failed to fetch all posts: %s", err)
-	}
-
-	// Downloads every post's content
-	for _, post := range posts {
-		postUrl := fmt.Sprintf("https://%s.party%s", service, post)
-		err := downloadPost(postUrl, dir, name, service)
-		if err != nil {
-			log.Printf("Failed to download post: %s", err)
-		}
-		// Adds a delay between each request to prevent HTTP 429: Too many requests
-		time.Sleep(300 * time.Millisecond)
+		log.Fatalf("Failed to fetch posts: %s", err)
 	}
 }
 
-// Downloads media content from a post
-func downloadPost(url string, directory string, name string, service string) error {
-	log.Printf("Downloading post: %s", url)
-	res, err := http.Get(url)
+// ... existing extractProfileConfig function ...
+
+// fetchAndPrintPosts calls the API and prints the JSON response to console
+func fetchAndPrintPosts(profile *ProfileConfig) error {
+	// Construct the API URL
+	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/posts", profile.BaseURL, profile.Service, profile.UserID)
+	log.Printf("Calling API: %s", apiURL)
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request: %w", err)
 	}
-	defer res.Body.Close()
 
-	doc, err := goquery.NewDocumentFromReader(res.Body)
+	// Set the required Accept header
+	req.Header.Set("Accept", "text/css")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var files []string
-	// Extracts the media URLs from the Downloads section of the post
-	doc.Find("h2:contains('Downloads')").Next().Find("a.post__attachment-link").Each(func(i int, selection *goquery.Selection) {
-		file, exists := selection.Attr("href")
-		if exists {
-			files = append(files, file)
-		}
-	})
-
-	// Extracts the media URLs from the Files section of the post
-	doc.Find("h2:contains('Files')").Next().Find("a.fileThumb").Each(func(i int, selection *goquery.Selection) {
-		file, exists := selection.Attr("href")
-		if exists {
-			files = append(files, file)
-		}
-	})
-
-	// Matches the creator's id from the url using regex
-	regex := regexp.MustCompile(`.*\/\w+\/post\/(\d+)`)
-	match := regex.FindStringSubmatch(url)
-
-	// Download all media from the post
-	for _, file := range files {
-		if service == "coomer" {
-			file = strings.Split(file, "?")[0]
-			file = fmt.Sprintf("https://coomer.party%s", file)
-		}
-
-		err := downloadFile(file, directory, name, match[1])
-		if err != nil {
-			log.Printf("Failed to download file: %s", err)
-		}
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
 	}
+
+	// Unmarshal the JSON response into a slice of Post objects
+	var posts []Post
+	err = json.Unmarshal(body, &posts)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+
+	// Pretty print the posts
+	prettyBody, err := json.MarshalIndent(posts, "", "  ")
+	if err != nil {
+		fmt.Println("Failed to pretty print JSON:")
+		fmt.Println(string(body))
+		return nil
+	}
+
+	fmt.Println("API Response:")
+	fmt.Println(string(prettyBody))
+	fmt.Printf("\nTotal posts retrieved: %d\n", len(posts))
 
 	return nil
 }
 
-// Downloads a file from a URL
-func downloadFile(url string, directory string, name string, postID string) error {
-	// Constructs the file path for the resulting file
-	file := fmt.Sprintf("%s/%s_%s_%s", directory, name, postID, path.Base(url))
-
-	if _, err := os.Stat(file); os.IsNotExist(err) {
-		client := grab.NewClient()
-		req, err := grab.NewRequest(file, url)
-		if err != nil {
-			return err
-		}
-
-		client.Do(req)
-	}
-
-	return nil
-}
-
-// Returns array of links to all posts from teh creator
-func getAllPosts(url string) ([]string, error) {
-	pages, err := numberOfPages(url)
+// extractProfileConfig parses the profile URL and extracts base URL, service, and user ID
+func extractProfileConfig(profileURL string) (*ProfileConfig, error) {
+	// Parse the URL to validate it's a valid URL
+	parsedURL, err := url.Parse(profileURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	// Iterates through every page and extracts all posts
-	var posts []string
-	for i := 0; i < pages; i++ {
-		page := fmt.Sprintf("%s?o=%d", url, i*50)
-		log.Println(page)
-		res, err := http.Get(page)
-		if err != nil {
-			return nil, err
-		}
-		defer res.Body.Close()
+	// Remove query parameters from the path
+	path := strings.Split(parsedURL.Path, "?")[0]
+	pathParts := strings.Split(strings.Trim(path, "/"), "/")
 
-		doc, err := goquery.NewDocumentFromReader(res.Body)
-		if err != nil {
-			return nil, err
-		}
-
-		// Searches for the post links in the HTML
-		doc.Find("article.post-card").Each(func(i int, selection *goquery.Selection) {
-			postUrl, _ := selection.Find("a").Attr("href")
-			posts = append(posts, postUrl)
-		})
+	// Expected format: /{service}/user/{user_id}
+	if len(pathParts) < 3 || pathParts[1] != "user" {
+		return nil, errors.New("URL does not match expected format: /{service}/user/{user_id}")
 	}
 
-	return posts, nil
-}
+	service := pathParts[0]
+	userID := pathParts[2]
 
-// Returns the total number of pages for a creator
-func numberOfPages(url string) (int, error) {
-	res, err := http.Get(url)
-	if err != nil {
-		return 0, err
-	}
-	defer res.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		return 0, err
+	if service == "" || userID == "" {
+		return nil, errors.New("service or user ID is empty")
 	}
 
-	// Searches for the HTML part containing the total number of posts
-	postText := doc.Find("div.paginator small").Text()
+	// Reconstruct base URL (scheme + host)
+	baseURL := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 
-	// Matches the number of posts from the element
-	pattern := `Showing \d+ - \d+ of (\d+)`
-	regex := regexp.MustCompile(pattern)
-	matches := regex.FindStringSubmatch(postText)
-	if len(matches) < 2 {
-		return 0, errors.New("could not extract the number of posts")
-	}
-
-	posts, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return 0, errors.New("could not extract the number of posts")
-	}
-
-	// Adds 49 to the total number of posts to account for rounding up when calculating the number of pages.
-	// Then divides teh adjusted total by 50 to calculate the total number of pages
-	pageCount := (posts + 49) / 50
-
-	return pageCount, nil
-}
-
-// Returns name of the creator
-func getName(url string) (string, error) {
-	res, err := http.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	name := doc.Find("span[itemprop='name']").Text()
-	return name, nil
+	return &ProfileConfig{
+		BaseURL: baseURL,
+		Service: service,
+		UserID:  userID,
+	}, nil
 }
