@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type ProfileConfig struct {
@@ -138,8 +139,11 @@ func main() {
 
 // fetchAndSaveDetailedPosts fetches detailed post data and saves it to disk
 func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []Post) error {
-	for _, post := range posts {
-		log.Printf("Fetching detailed data for post: %s", post.Id)
+	totalPosts := len(posts)
+	log.Printf("Processing %d posts", totalPosts)
+
+	for idx, post := range posts {
+		log.Printf("[%d/%d] Fetching detailed data for post: %s", idx+1, totalPosts, post.Id)
 
 		// Fetch detailed post data
 		detailedPost, err := fetchDetailedPost(profile, post.Id)
@@ -155,7 +159,7 @@ func fetchAndSaveDetailedPosts(baseDir string, profile *ProfileConfig, posts []P
 			continue
 		}
 
-		log.Printf("Saved post: %s", post.Id)
+		log.Printf("Saved post metadata: %s", post.Id)
 
 		// Download post file
 		err = downloadPostFile(baseDir, profile.Service, profile.UserID, post.Id, detailedPost, profile)
@@ -457,7 +461,39 @@ func downloadPostFile(baseDir string, service string, userID string, postID stri
 	return nil
 }
 
-// downloadFileFromPath downloads a file using the base URL and file path
+// ProgressWriter wraps io.Writer to track download progress
+type ProgressWriter struct {
+	fileName       string
+	totalSize      int64
+	downloadedSize int64
+	lastLogTime    time.Time
+}
+
+func (pw *ProgressWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	pw.downloadedSize += int64(n)
+
+	// Log progress every second
+	now := time.Now()
+	if now.Sub(pw.lastLogTime) >= time.Second || pw.downloadedSize == pw.totalSize {
+		pw.lastLogTime = now
+		if pw.totalSize > 0 {
+			percentage := float64(pw.downloadedSize) / float64(pw.totalSize) * 100
+			downloadedMB := float64(pw.downloadedSize) / 1024 / 1024
+			totalMB := float64(pw.totalSize) / 1024 / 1024
+			log.Printf("[%s] Progress: %.1f%% (%.2f MB / %.2f MB)",
+				pw.fileName, percentage, downloadedMB, totalMB)
+		} else {
+			downloadedMB := float64(pw.downloadedSize) / 1024 / 1024
+			log.Printf("[%s] Downloaded: %.2f MB (unknown total size)",
+				pw.fileName, downloadedMB)
+		}
+	}
+
+	return n, nil
+}
+
+// downloadFileFromPath downloads a file using the base URL and file path with progress tracking
 func downloadFileFromPath(destDir string, fileName string, filePath string, baseURL string) error {
 	// Construct full download URL using base URL
 	downloadURL := baseURL + filePath
@@ -471,8 +507,14 @@ func downloadFileFromPath(destDir string, fileName string, filePath string, base
 	// Set User-Agent header
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	// Make the HTTP request
-	client := &http.Client{}
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 2 * time.Minute,
+	}
+
+	log.Printf("Starting download: %s", fileName)
+	startTime := time.Now()
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", fileName, err)
@@ -484,7 +526,7 @@ func downloadFileFromPath(destDir string, fileName string, filePath string, base
 		return fmt.Errorf("download failed for %s with status %d", fileName, resp.StatusCode)
 	}
 
-	// Write to file
+	// Create output file
 	outputPath := filepath.Join(destDir, fileName)
 	file, err := os.Create(outputPath)
 	if err != nil {
@@ -492,10 +534,28 @@ func downloadFileFromPath(destDir string, fileName string, filePath string, base
 	}
 	defer file.Close()
 
-	_, err = io.Copy(file, resp.Body)
+	// Get total file size from Content-Length header
+	totalSize := resp.ContentLength
+
+	// Create progress writer
+	progressWriter := &ProgressWriter{
+		fileName:    fileName,
+		totalSize:   totalSize,
+		lastLogTime: startTime,
+	}
+
+	// Copy with progress tracking
+	_, err = io.Copy(file, io.TeeReader(resp.Body, progressWriter))
 	if err != nil {
+		os.Remove(outputPath) // Clean up incomplete file
 		return fmt.Errorf("failed to write file %s: %w", fileName, err)
 	}
+
+	// Log completion with speed
+	duration := time.Since(startTime)
+	speedMBs := float64(progressWriter.downloadedSize) / 1024 / 1024 / duration.Seconds()
+	log.Printf("Completed download: %s (%.2f MB in %.1fs at %.2f MB/s)",
+		fileName, float64(progressWriter.downloadedSize)/1024/1024, duration.Seconds(), speedMBs)
 
 	return nil
 }
