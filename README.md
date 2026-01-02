@@ -1,6 +1,5 @@
 # kemono-dl
-kemono-dl is program for downloading videos, images and other files from kemono.party \
-You can build the executable yourself from the source code or download it from the releases page
+kemono-dl is a program for downloading videos, images and other files from kemono.party. You can build the executable yourself from the source code or download it from the releases page.
 
 ## Building the project:
 ### Clone the repository:
@@ -24,5 +23,9 @@ make mac
 ## Usage
 
 ```bash
-./kemono-dl_linux_amd64 [URL]
+kemono-dl [options] <url>
 ```
+
+## Options
+`--force` Force update even if profile timestamp hasn't changed <br>
+`--skip-download`Only fetch and save metadata, skip downloading files
