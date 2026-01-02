@@ -13,14 +13,12 @@ import (
 	"strings"
 )
 
-// ProfileConfig holds the extracted profile information
 type ProfileConfig struct {
-	BaseURL string // e.g., "https://kemono.cr" or "https://coomer.st"
-	Service string // e.g., "patreon", "onlyfans"
-	UserID  string // e.g., "12345" or "username"
+	BaseURL string
+	Service string
+	UserID  string
 }
 
-// Post represents a single post from the API response
 type Post struct {
 	Id        string `json:"id"`
 	User      string `json:"user"`
@@ -34,6 +32,20 @@ type Post struct {
 		Name string `json:"name"`
 		Path string `json:"path"`
 	} `json:"attachments"`
+}
+
+type ProfileResponse struct {
+	Id         string      `json:"id"`
+	Name       string      `json:"name"`
+	Service    string      `json:"service"`
+	Indexed    string      `json:"indexed"`
+	Updated    string      `json:"updated"`
+	PublicId   string      `json:"public_id"`
+	RelationId interface{} `json:"relation_id"`
+	PostCount  int         `json:"post_count"`
+	DmCount    int         `json:"dm_count"`
+	ShareCount int         `json:"share_count"`
+	ChatCount  int         `json:"chat_count"`
 }
 
 func main() {
@@ -54,13 +66,19 @@ func main() {
 	log.Printf("Service: %s", profile.Service)
 	log.Printf("User ID: %s", profile.UserID)
 
+	// Fetch profile to get post count
+	profileData, err := fetchProfile(profile)
+	if err != nil {
+		log.Fatalf("Failed to fetch profile: %s", err)
+	}
+
+	log.Printf("Total posts: %d", profileData.PostCount)
+
 	// Fetch posts from API
 	posts, err := fetchPosts(profile)
 	if err != nil {
 		log.Fatalf("Failed to fetch posts: %s", err)
 	}
-
-	log.Printf("Retrieved %d posts", len(posts))
 
 	// Get current working directory
 	wd, err := os.Getwd()
@@ -79,13 +97,55 @@ func main() {
 	log.Println("All posts saved successfully")
 }
 
-// ... existing extractProfileConfig function ...
+// fetchProfile retrieves the user profile and returns post count
+func fetchProfile(profile *ProfileConfig) (*ProfileResponse, error) {
+	// Construct the profile API URL
+	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/profile", profile.BaseURL, profile.Service, profile.UserID)
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set the required Accept header
+	req.Header.Set("Accept", "text/css")
+
+	// Make the HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call profile API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Unmarshal the JSON response into ProfileResponse
+	var profileResp ProfileResponse
+	err = json.Unmarshal(body, &profileResp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+
+	return &profileResp, nil
+}
 
 // fetchPosts calls the API and returns the posts
 func fetchPosts(profile *ProfileConfig) ([]Post, error) {
 	// Construct the API URL
 	apiURL := fmt.Sprintf("%s/api/v1/%s/user/%s/posts", profile.BaseURL, profile.Service, profile.UserID)
-	log.Printf("Calling API: %s", apiURL)
+	log.Printf("Fetching posts: %s", apiURL)
 
 	// Create a new HTTP request
 	req, err := http.NewRequest("GET", apiURL, nil)
