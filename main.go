@@ -74,16 +74,34 @@ func main() {
 
 	log.Printf("Total posts: %d", profileData.PostCount)
 
-	// Fetch posts from API
-	posts, err := fetchPosts(profile)
-	if err != nil {
-		log.Fatalf("Failed to fetch posts: %s", err)
-	}
-
 	// Get current working directory
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("Failed to get current working directory: %s", err)
+	}
+
+	// Check if profile folder exists and compare updated timestamps
+	profileDir := filepath.Join(wd, profile.Service, profileData.Id)
+	shouldUpdate, err := shouldUpdateProfile(profileDir, profileData)
+	if err != nil {
+		log.Fatalf("Failed to check profile status: %s", err)
+	}
+
+	if !shouldUpdate {
+		log.Println("Nothing to download")
+		return
+	}
+
+	// Save profile details
+	err = saveProfile(wd, profile.Service, profileData)
+	if err != nil {
+		log.Fatalf("Failed to save profile: %s", err)
+	}
+
+	// Fetch posts from API
+	posts, err := fetchPosts(profile)
+	if err != nil {
+		log.Fatalf("Failed to fetch posts: %s", err)
 	}
 
 	// Create folder structure and save post data
@@ -95,6 +113,57 @@ func main() {
 	}
 
 	log.Println("All posts saved successfully")
+}
+
+// shouldUpdateProfile checks if profile folder exists and compares the updated timestamp
+func shouldUpdateProfile(profileDir string, newProfile *ProfileResponse) (bool, error) {
+	// Check if profile directory exists
+	_, err := os.Stat(profileDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Directory doesn't exist, so we should update
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to check profile directory: %w", err)
+	}
+
+	// Directory exists, find and read the profile JSON file
+	files, err := os.ReadDir(profileDir)
+	if err != nil {
+		return false, fmt.Errorf("failed to read profile directory: %w", err)
+	}
+
+	var profileFile string
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
+			profileFile = filepath.Join(profileDir, file.Name())
+			break
+		}
+	}
+
+	if profileFile == "" {
+		// No profile JSON file found, should update
+		return true, nil
+	}
+
+	// Read the existing profile JSON
+	data, err := os.ReadFile(profileFile)
+	if err != nil {
+		return false, fmt.Errorf("failed to read profile file: %w", err)
+	}
+
+	var existingProfile ProfileResponse
+	err = json.Unmarshal(data, &existingProfile)
+	if err != nil {
+		return false, fmt.Errorf("failed to unmarshal existing profile: %w", err)
+	}
+
+	// Compare the updated timestamps
+	if existingProfile.Updated == newProfile.Updated {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // fetchProfile retrieves the user profile and returns post count
@@ -210,6 +279,32 @@ func savePosts(baseDir string, service string, userID string, post *Post) error 
 	}
 
 	log.Printf("Saved post %s to %s", post.Id, postDir)
+
+	return nil
+}
+
+// saveProfile saves the profile details as a JSON file in the service/userID directory
+func saveProfile(baseDir string, service string, profile *ProfileResponse) error {
+	// Create the directory structure: baseDir/service/userID/
+	profileDir := filepath.Join(baseDir, service, profile.Id)
+
+	err := os.MkdirAll(profileDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create profile directory: %w", err)
+	}
+
+	// Marshal the profile struct to JSON
+	profileData, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal profile data: %w", err)
+	}
+
+	// Write the JSON data to profile.json file (using the profile name/id as filename)
+	profileFilePath := filepath.Join(profileDir, profile.Name+".json")
+	err = os.WriteFile(profileFilePath, profileData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write profile JSON: %w", err)
+	}
 
 	return nil
 }
