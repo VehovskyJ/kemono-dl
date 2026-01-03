@@ -3,7 +3,7 @@
 BUILD_PATH=build
 BINARY=kemono-dl
 
-all: linux windows arm mac
+all: linux windows arm mac linux_arm64 mac_arm64
 
 clean:
 	rm -rf $(BUILD_PATH)
