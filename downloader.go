@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// fetchAndSaveDetailedPosts fetches detailed post data and saves it to disk
-func AppendFailedDownload(baseDir, service, userID, url string) error {
+// AppendFailedDownload saves the failed file URL to the failed.json in the user's folder, grouped by post ID.
+func AppendFailedDownload(baseDir, service, userID, postID, url string) error {
 	failedDir := filepath.Join(baseDir, service, userID)
 	failedFile := filepath.Join(failedDir, "failed.json")
-	var failedList []string
+	var failedList []FailedItem
 
 	// Try to read existing failed.json
 	data, err := os.ReadFile(failedFile)
@@ -23,13 +23,26 @@ func AppendFailedDownload(baseDir, service, userID, url string) error {
 		_ = json.Unmarshal(data, &failedList)
 	}
 
-	// Add only if not already present
-	for _, u := range failedList {
-		if u == url {
-			return nil
+	found := false
+	for i := range failedList {
+		if failedList[i].Post == postID {
+			// Only add URL if not present
+			for _, existing := range failedList[i].URLs {
+				if existing == url {
+					return nil
+				}
+			}
+			failedList[i].URLs = append(failedList[i].URLs, url)
+			found = true
+			break
 		}
 	}
-	failedList = append(failedList, url)
+	if !found {
+		failedList = append(failedList, FailedItem{
+			Post: postID,
+			URLs: []string{url},
+		})
+	}
 
 	out, _ := json.MarshalIndent(failedList, "", "  ")
 	if err := os.WriteFile(failedFile, out, 0644); err != nil {
@@ -170,8 +183,8 @@ func downloadPostFile(baseDir string, service string, userID string, postID stri
 
 	err := downloadFileFromPath(postDir, name, path, profile.BaseURL)
 	if err != nil {
-		// Save failed URL to failed.json
-		_ = AppendFailedDownload(baseDir, service, userID, profile.BaseURL+path)
+		// Save failed URL to failed.json, with postID
+		_ = AppendFailedDownload(baseDir, service, userID, postID, profile.BaseURL+path)
 		return fmt.Errorf("failed to download file %s: %w", name, err)
 	}
 
@@ -354,8 +367,8 @@ func downloadPostAttachments(baseDir string, service string, userID string, post
 		// Download the attachment to post directory
 		err := downloadFileFromPath(postDir, name, path, profile.BaseURL)
 		if err != nil {
-			// Save failed URL to failed.json
-			_ = AppendFailedDownload(baseDir, service, userID, profile.BaseURL+path)
+			// Save failed URL to failed.json, with postID
+			_ = AppendFailedDownload(baseDir, service, userID, postID, profile.BaseURL+path)
 			log.Printf("Warning: Failed to download attachment %s for post %s: %s", name, postID, err)
 			continue
 		}

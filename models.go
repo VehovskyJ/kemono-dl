@@ -42,3 +42,8 @@ type ProfileResponse struct {
 	ShareCount int         `json:"share_count"`
 	ChatCount  int         `json:"chat_count"`
 }
+
+type FailedItem struct {
+	Post string   `json:"post"`
+	URLs []string `json:"urls"`
+}
