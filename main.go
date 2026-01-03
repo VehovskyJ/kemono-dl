@@ -10,12 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+var DownloadTimeout = 2 * time.Minute
 
 func main() {
 	// Define flags
 	forceUpdate := flag.Bool("force", false, "Force update even if profile timestamp hasn't changed")
 	skipDownload := flag.Bool("skip-download", false, "Only fetch and save metadata, skip downloading files")
+	timeoutStr := flag.String("timeout", "2m", "File download timeout (e.g. 10s, 2m, 5m)")
 
 	// Customize the help message
 	flag.Usage = func() {
@@ -25,6 +29,13 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Parse download timeout from flag
+	t, err := time.ParseDuration(*timeoutStr)
+	if err != nil {
+		log.Fatalf("Invalid timeout: %v", err)
+	}
+	DownloadTimeout = t
 
 	// Get the positional argument (URL)
 	args := flag.Args()

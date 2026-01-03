@@ -28,4 +28,5 @@ kemono-dl [options] <url>
 
 ## Options
 `--force` Force update even if profile timestamp hasn't changed <br>
-`--skip-download`Only fetch and save metadata, skip downloading files
+`--skip-download`Only fetch and save metadata, skip downloading files <br>
+`--timeout` Set download timeout for each file (default: "2m"). Supports Go durations like `10s`, `5m`, etc.<br>

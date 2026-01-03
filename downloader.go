@@ -239,9 +239,9 @@ func downloadFileFromPath(destDir string, fileName string, filePath string, base
 		// Set User-Agent header
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-		// Create HTTP client with timeout
+		// Create HTTP client with timeout (use global DownloadTimeout)
 		client := &http.Client{
-			Timeout: 2 * time.Minute,
+			Timeout: DownloadTimeout,
 		}
 
 		log.Printf("Starting download: %s", fileName)
